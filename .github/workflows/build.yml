@@ -1,1 +1,591 @@
-1
+name: Build Mid Click to Pearl JAR
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Project Files
+        run: |
+          mkdir -p src/main/java/com/ahmad/midclickpearl/config
+          mkdir -p src/main/java/com/ahmad/midclickpearl/util
+          mkdir -p src/main/resources/assets/mid_click_to_pearl/lang
+
+          cat << 'EOF' > settings.gradle
+          pluginManagement {
+              repositories {
+                  maven {
+                      name = 'Fabric'
+                      url = 'https://maven.fabricmc.net/'
+                  }
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          rootProject.name = 'mid-click-to-pearl'
+          EOF
+
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2G
+          org.gradle.parallel=true
+          minecraft_version=1.21.11
+          yarn_mappings=1.21.11+build.6
+          loader_version=0.18.4
+          loom_version=1.14.10
+          fabric_version=0.141.6+1.21.11
+          modmenu_version=17.0.1
+          mod_version=1.0.0
+          maven_group=com.ahmad.midclickpearl
+          archives_base_name=mid-click-to-pearl
+          EOF
+
+          cat << 'EOF' > build.gradle
+          plugins {
+              id 'fabric-loom' version "${loom_version}"
+              id 'maven-publish'
+          }
+
+          version = "${project.mod_version}+mc${project.minecraft_version}"
+          group = project.maven_group
+
+          base {
+              archivesName = project.archives_base_name
+          }
+
+          repositories {
+              mavenCentral()
+              maven {
+                  name = "TerraformersMC"
+                  url = "https://maven.terraformersmc.com/releases/"
+              }
+          }
+
+          dependencies {
+              minecraft "com.mojang:minecraft:${project.minecraft_version}"
+              mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+              modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+              modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+              modCompileOnly "com.terraformersmc:modmenu:${project.modmenu_version}"
+              modLocalRuntime "com.terraformersmc:modmenu:${project.modmenu_version}"
+          }
+
+          processResources {
+              inputs.property "version", project.version
+              filesMatching("fabric.mod.json") {
+                  expand "version": inputs.properties.version
+              }
+          }
+
+          tasks.withType(JavaCompile).configureEach {
+              it.options.release = 21
+              it.options.encoding = "UTF-8"
+          }
+
+          java {
+              withSourcesJar()
+              sourceCompatibility = JavaVersion.VERSION_21
+              targetCompatibility = JavaVersion.VERSION_21
+          }
+          EOF
+
+          cat << 'EOF' > src/main/resources/fabric.mod.json
+          {
+            "schemaVersion": 1,
+            "id": "mid_click_to_pearl",
+            "version": "${version}",
+            "name": "Mid Click to Pal",
+            "description": "Lightweight Crystal PvP utility mod that throws an Ender Pearl from the hotbar with a single keybind (default: Middle Click) and restores the previous hotbar slot. Credit: Ahmad.",
+            "authors": ["Ahmad"],
+            "license": "MIT",
+            "environment": "client",
+            "entrypoints": {
+              "client": ["com.ahmad.midclickpearl.MidClickToPearlClient"],
+              "modmenu": ["com.ahmad.midclickpearl.config.ModMenuIntegration"]
+            },
+            "depends": {
+              "fabricloader": "*",
+              "minecraft": "=1.21.11",
+              "java": ">=21",
+              "fabric-api": "*"
+            },
+            "suggests": {
+              "modmenu": "*"
+            }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/resources/assets/mid_click_to_pearl/lang/en_us.json
+          {
+            "key.category.mid_click_to_pearl.general": "Mid Click to Pal",
+            "key.mid_click_to_pearl.throw_pearl": "Mid Click to Pal: Throw Ender Pearl",
+            "text.mid_click_to_pearl.no_pearl": "No Ender Pearl in Hotbar",
+            "text.mid_click_to_pearl.cooldown": "Ender Pearl is on Cooldown",
+            "screen.mid_click_to_pearl.config.title": "Mid Click to Pal Settings",
+            "screen.mid_click_to_pearl.config.enabled": "Mid Click to Pal: ON",
+            "screen.mid_click_to_pearl.config.disabled": "Mid Click to Pal: OFF",
+            "screen.mid_click_to_pearl.config.messages_on": "Status Messages: ON",
+            "screen.mid_click_to_pearl.config.messages_off": "Status Messages: OFF",
+            "screen.mid_click_to_pearl.config.keybind_info": "Current Keybind: %s",
+            "screen.mid_click_to_pearl.config.keybind_hint": "Change keybind in Options -> Controls -> Key Binds",
+            "screen.mid_click_to_pearl.config.conflict_hint": "Tip: If Pick Block is also on Middle Click, rebind Pick Block in Controls if needed.",
+            "screen.mid_click_to_pearl.config.open_controls": "Open Key Binds...",
+            "screen.mid_click_to_pearl.config.credit": "Developed for Minecraft 1.21.11 | Credit: Ahmad"
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/ahmad/midclickpearl/MidClickToPearlClient.java
+          package com.ahmad.midclickpearl;
+
+          import com.ahmad.midclickpearl.config.MidClickPearlConfig;
+          import com.ahmad.midclickpearl.util.PearlThrowHandler;
+          import net.fabricmc.api.ClientModInitializer;
+          import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+          import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+          import net.minecraft.client.option.KeyBinding;
+          import net.minecraft.client.util.InputUtil;
+          import net.minecraft.util.Identifier;
+          import org.lwjgl.glfw.GLFW;
+          import org.slf4j.Logger;
+          import org.slf4j.LoggerFactory;
+
+          public final class MidClickToPearlClient implements ClientModInitializer {
+              public static final String MOD_ID = "mid_click_to_pearl";
+              public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+
+              public static final KeyBinding.Category KEY_CATEGORY = KeyBinding.Category.create(
+                      Identifier.of(MOD_ID, "general")
+              );
+
+              private static KeyBinding throwPearlKeyBinding;
+              private static boolean wasKeyHeld = false;
+
+              @Override
+              public void onInitializeClient() {
+                  MidClickPearlConfig.load();
+
+                  throwPearlKeyBinding = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                          "key.mid_click_to_pearl.throw_pearl",
+                          InputUtil.Type.MOUSE,
+                          GLFW.GLFW_MOUSE_BUTTON_MIDDLE,
+                          KEY_CATEGORY
+                  ));
+
+                  ClientTickEvents.END_CLIENT_TICK.register(client -> {
+                      if (throwPearlKeyBinding == null) {
+                          return;
+                      }
+
+                      boolean pressedEvent = false;
+                      while (throwPearlKeyBinding.wasPressed()) {
+                          pressedEvent = true;
+                      }
+
+                      boolean currentlyDown = throwPearlKeyBinding.isPressed();
+
+                      if (!MidClickPearlConfig.isEnabled() || client.currentScreen != null) {
+                          wasKeyHeld = currentlyDown;
+                          return;
+                      }
+
+                      if (pressedEvent && !wasKeyHeld) {
+                          wasKeyHeld = true;
+                          PearlThrowHandler.tryThrowPearl(client);
+                      } else if (!currentlyDown) {
+                          wasKeyHeld = false;
+                      }
+                  });
+
+                  LOGGER.info("Mid Click to Pal (1.21.11) initialized. Credit: Ahmad");
+              }
+
+              public static KeyBinding getThrowPearlKeyBinding() {
+                  return throwPearlKeyBinding;
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/ahmad/midclickpearl/util/PearlThrowHandler.java
+          package com.ahmad.midclickpearl.util;
+
+          import com.ahmad.midclickpearl.config.MidClickPearlConfig;
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.client.network.ClientPlayerEntity;
+          import net.minecraft.client.network.ClientPlayerInteractionManager;
+          import net.minecraft.entity.player.PlayerInventory;
+          import net.minecraft.item.ItemStack;
+          import net.minecraft.item.Items;
+          import net.minecraft.text.Text;
+          import net.minecraft.util.ActionResult;
+          import net.minecraft.util.Formatting;
+          import net.minecraft.util.Hand;
+
+          public final class PearlThrowHandler {
+
+              private static final int HOTBAR_SIZE = 9;
+
+              private static final Text MSG_NO_PEARL = Text.translatable("text.mid_click_to_pearl.no_pearl")
+                      .formatted(Formatting.RED);
+              private static final Text MSG_COOLDOWN = Text.translatable("text.mid_click_to_pearl.cooldown")
+                      .formatted(Formatting.YELLOW);
+
+              private PearlThrowHandler() {
+              }
+
+              public static void tryThrowPearl(MinecraftClient client) {
+                  if (client == null || client.currentScreen != null) {
+                      return;
+                  }
+
+                  ClientPlayerEntity player = client.player;
+                  ClientPlayerInteractionManager interactionManager = client.interactionManager;
+                  if (player == null || client.world == null || interactionManager == null) {
+                      return;
+                  }
+
+                  if (player.isSpectator() || player.isDead() || player.isUsingItem()) {
+                      return;
+                  }
+
+                  PlayerInventory inventory = player.getInventory();
+                  int originalSlot = inventory.getSelectedSlot();
+                  if (!PlayerInventory.isValidHotbarIndex(originalSlot)) {
+                      return;
+                  }
+
+                  int pearlSlot = findHotbarPearlSlot(inventory, originalSlot);
+
+                  if (pearlSlot == -1) {
+                      if (MidClickPearlConfig.isShowStatusMessages()) {
+                          player.sendMessage(MSG_NO_PEARL, true);
+                      }
+                      return;
+                  }
+
+                  ItemStack pearlStack = inventory.getStack(pearlSlot);
+                  if (pearlStack.isEmpty() || !pearlStack.isOf(Items.ENDER_PEARL)) {
+                      return;
+                  }
+
+                  if (player.getItemCooldownManager().isCoolingDown(pearlStack)) {
+                      if (MidClickPearlConfig.isShowStatusMessages()) {
+                          player.sendMessage(MSG_COOLDOWN, true);
+                      }
+                      return;
+                  }
+
+                  boolean switchedSlot = (pearlSlot != originalSlot);
+
+                  try {
+                      if (switchedSlot) {
+                          inventory.setSelectedSlot(pearlSlot);
+                      }
+
+                      ActionResult result = interactionManager.interactItem(player, Hand.MAIN_HAND);
+                      if (result instanceof ActionResult.Success success && success.swingSource() == ActionResult.SwingSource.CLIENT) {
+                          player.swingHand(Hand.MAIN_HAND);
+                      }
+                  } finally {
+                      if (switchedSlot && PlayerInventory.isValidHotbarIndex(originalSlot)) {
+                          inventory.setSelectedSlot(originalSlot);
+                          interactionManager.syncSelectedSlot();
+                      }
+                  }
+              }
+
+              private static int findHotbarPearlSlot(PlayerInventory inventory, int currentSlot) {
+                  ItemStack currentStack = inventory.getStack(currentSlot);
+                  if (!currentStack.isEmpty() && currentStack.isOf(Items.ENDER_PEARL)) {
+                      return currentSlot;
+                  }
+
+                  for (int i = 0; i < HOTBAR_SIZE; i++) {
+                      if (i == currentSlot) {
+                          continue;
+                      }
+                      ItemStack stack = inventory.getStack(i);
+                      if (!stack.isEmpty() && stack.isOf(Items.ENDER_PEARL)) {
+                          return i;
+                      }
+                  }
+
+                  return -1;
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/ahmad/midclickpearl/config/MidClickPearlConfig.java
+          package com.ahmad.midclickpearl.config;
+
+          import com.ahmad.midclickpearl.MidClickToPearlClient;
+          import net.fabricmc.loader.api.FabricLoader;
+
+          import java.io.IOException;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.util.Properties;
+
+          public final class MidClickPearlConfig {
+              private static final String CONFIG_FILE_NAME = "mid_click_to_pearl.properties";
+              private static final String KEY_ENABLED = "enabled";
+              private static final String KEY_SHOW_MESSAGES = "show_status_messages";
+
+              private static boolean enabled = true;
+              private static boolean showStatusMessages = true;
+
+              private MidClickPearlConfig() {
+              }
+
+              public static boolean isEnabled() {
+                  return enabled;
+              }
+
+              public static void setEnabled(boolean value) {
+                  enabled = value;
+                  save();
+              }
+
+              public static void toggleEnabled() {
+                  setEnabled(!enabled);
+              }
+
+              public static boolean isShowStatusMessages() {
+                  return showStatusMessages;
+              }
+
+              public static void toggleShowStatusMessages() {
+                  showStatusMessages = !showStatusMessages;
+                  save();
+              }
+
+              private static Path getConfigPath() {
+                  return FabricLoader.getInstance().getConfigDir().resolve(CONFIG_FILE_NAME);
+              }
+
+              public static void load() {
+                  Path path = getConfigPath();
+                  if (!Files.exists(path)) {
+                      enabled = true;
+                      showStatusMessages = true;
+                      save();
+                      return;
+                  }
+
+                  Properties props = new Properties();
+                  try (InputStream in = Files.newInputStream(path)) {
+                      props.load(in);
+                      enabled = parseBooleanOrDefault(props.getProperty(KEY_ENABLED), true);
+                      showStatusMessages = parseBooleanOrDefault(props.getProperty(KEY_SHOW_MESSAGES), true);
+                  } catch (IOException | IllegalArgumentException e) {
+                      MidClickToPearlClient.LOGGER.warn("Failed to read {}; using default settings.", CONFIG_FILE_NAME, e);
+                      enabled = true;
+                      showStatusMessages = true;
+                  }
+              }
+
+              private static boolean parseBooleanOrDefault(String raw, boolean defaultValue) {
+                  if (raw == null) {
+                      return defaultValue;
+                  }
+                  String trimmed = raw.trim();
+                  if ("true".equalsIgnoreCase(trimmed)) {
+                      return true;
+                  }
+                  if ("false".equalsIgnoreCase(trimmed)) {
+                      return false;
+                  }
+                  return defaultValue;
+              }
+
+              public static void save() {
+                  Path path = getConfigPath();
+                  Properties props = new Properties();
+                  props.setProperty(KEY_ENABLED, Boolean.toString(enabled));
+                  props.setProperty(KEY_SHOW_MESSAGES, Boolean.toString(showStatusMessages));
+
+                  try {
+                      Files.createDirectories(path.getParent());
+                      try (OutputStream out = Files.newOutputStream(path)) {
+                          props.store(out, "Mid Click to Pal Configuration (Minecraft 1.21.11) - Credit: Ahmad");
+                      }
+                  } catch (IOException e) {
+                      MidClickToPearlClient.LOGGER.warn("Failed to save {}.", CONFIG_FILE_NAME, e);
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/ahmad/midclickpearl/config/MidClickPearlConfigScreen.java
+          package com.ahmad.midclickpearl.config;
+
+          import com.ahmad.midclickpearl.MidClickToPearlClient;
+          import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.client.gui.screen.Screen;
+          import net.minecraft.client.gui.screen.option.KeybindsScreen;
+          import net.minecraft.client.gui.widget.ButtonWidget;
+          import net.minecraft.client.option.KeyBinding;
+          import net.minecraft.screen.ScreenTexts;
+          import net.minecraft.text.Text;
+          import net.minecraft.util.Formatting;
+
+          public final class MidClickPearlConfigScreen extends Screen {
+              private final Screen parent;
+
+              public MidClickPearlConfigScreen(Screen parent) {
+                  super(Text.translatable("screen.mid_click_to_pearl.config.title"));
+                  this.parent = parent;
+              }
+
+              @Override
+              protected void init() {
+                  int buttonWidth = 220;
+                  int buttonHeight = 20;
+                  int centerX = this.width / 2 - buttonWidth / 2;
+                  int startY = this.height / 2 - 42;
+
+                  this.addDrawableChild(ButtonWidget.builder(getEnabledToggleText(), button -> {
+                      MidClickPearlConfig.toggleEnabled();
+                      button.setMessage(getEnabledToggleText());
+                  }).dimensions(centerX, startY, buttonWidth, buttonHeight).build());
+
+                  this.addDrawableChild(ButtonWidget.builder(getMessagesToggleText(), button -> {
+                      MidClickPearlConfig.toggleShowStatusMessages();
+                      button.setMessage(getMessagesToggleText());
+                  }).dimensions(centerX, startY + 24, buttonWidth, buttonHeight).build());
+
+                  this.addDrawableChild(ButtonWidget.builder(
+                          Text.translatable("screen.mid_click_to_pearl.config.open_controls"),
+                          button -> {
+                              if (this.client != null) {
+                                  this.client.setScreen(new KeybindsScreen(this, this.client.options));
+                              }
+                          }
+                  ).dimensions(centerX, startY + 48, buttonWidth, buttonHeight).build());
+
+                  this.addDrawableChild(ButtonWidget.builder(ScreenTexts.DONE, button -> close())
+                          .dimensions(centerX, startY + 96, buttonWidth, buttonHeight)
+                          .build());
+              }
+
+              private static Text getEnabledToggleText() {
+                  if (MidClickPearlConfig.isEnabled()) {
+                      return Text.translatable("screen.mid_click_to_pearl.config.enabled").formatted(Formatting.GREEN);
+                  }
+                  return Text.translatable("screen.mid_click_to_pearl.config.disabled").formatted(Formatting.RED);
+              }
+
+              private static Text getMessagesToggleText() {
+                  if (MidClickPearlConfig.isShowStatusMessages()) {
+                      return Text.translatable("screen.mid_click_to_pearl.config.messages_on").formatted(Formatting.GREEN);
+                  }
+                  return Text.translatable("screen.mid_click_to_pearl.config.messages_off").formatted(Formatting.GRAY);
+              }
+
+              @Override
+              public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+                  super.render(context, mouseX, mouseY, delta);
+
+                  int centerX = this.width / 2;
+                  int titleY = this.height / 2 - 80;
+
+                  context.drawCenteredTextWithShadow(this.textRenderer, this.title, centerX, titleY, 0xFFFFFF);
+
+                  KeyBinding keyBinding = MidClickToPearlClient.getThrowPearlKeyBinding();
+                  Text boundKeyName = keyBinding != null
+                          ? keyBinding.getBoundKeyLocalizedText().copy().formatted(Formatting.AQUA)
+                          : Text.literal("Button 3").formatted(Formatting.AQUA);
+
+                  Text keybindInfo = Text.translatable("screen.mid_click_to_pearl.config.keybind_info", boundKeyName)
+                          .formatted(Formatting.GRAY);
+                  Text keybindHint = Text.translatable("screen.mid_click_to_pearl.config.keybind_hint")
+                          .formatted(Formatting.DARK_GRAY);
+                  Text conflictHint = Text.translatable("screen.mid_click_to_pearl.config.conflict_hint")
+                          .formatted(Formatting.DARK_GRAY);
+                  Text creditText = Text.translatable("screen.mid_click_to_pearl.config.credit")
+                          .formatted(Formatting.DARK_GRAY);
+
+                  context.drawCenteredTextWithShadow(this.textRenderer, keybindInfo, centerX, this.height / 2 - 62, 0xA0A0A0);
+                  context.drawCenteredTextWithShadow(this.textRenderer, keybindHint, centerX, this.height / 2 + 32, 0x808080);
+                  context.drawCenteredTextWithShadow(this.textRenderer, conflictHint, centerX, this.height / 2 + 43, 0x707070);
+                  context.drawCenteredTextWithShadow(this.textRenderer, creditText, centerX, this.height - 18, 0x606060);
+              }
+
+              @Override
+              public void close() {
+                  MidClickPearlConfig.save();
+                  if (this.client != null) {
+                      this.client.setScreen(this.parent);
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/java/com/ahmad/midclickpearl/config/ModMenuIntegration.java
+          package com.ahmad.midclickpearl.config;
+
+          import com.terraformersmc.modmenu.api.ConfigScreenFactory;
+          import com.terraformersmc.modmenu.api.ModMenuApi;
+
+          public final class ModMenuIntegration implements ModMenuApi {
+              @Override
+              public ConfigScreenFactory<?> getModConfigScreenFactory() {
+                  return MidClickPearlConfigScreen::new;
+              }
+          }
+          EOF
+
+          for f in settings.gradle gradle.properties build.gradle src/main/resources/fabric.mod.json src/main/resources/assets/mid_click_to_pearl/lang/en_us.json $(find src -name "*.java"); do
+            sed -i 's/^          //' "$f"
+          done
+
+          zip -r mid-click-to-pearl-src.zip settings.gradle gradle.properties build.gradle src/
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle 9.2.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.2.1'
+
+      - name: Build Mod with Gradle
+        run: gradle build
+
+      - name: Upload Compiled Mod JAR and Source ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: mid-click-to-pearl-1.21.11-release
+          path: |
+            build/libs/*.jar
+            !build/libs/*-sources.jar
+            mid-click-to-pearl-src.zipsrc.zip settings.gradle gradle.properties build.gradle src/
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle 9.2.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.2.1'
+
+      - name: Build Mod with Gradle
+        run: gradle build
+
+      - name: Upload Compiled Mod JAR and Source ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: mid-click-to-pearl-1.21.11-release
+          path: |
+            build/libs/*.jar
+            !build/libs/*-sources.jar
+            mid-click-to-pearl-src.zip
