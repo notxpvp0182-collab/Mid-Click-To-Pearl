@@ -217,6 +217,7 @@ jobs:
           import net.minecraft.entity.player.PlayerInventory;
           import net.minecraft.item.ItemStack;
           import net.minecraft.item.Items;
+          import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
           import net.minecraft.text.Text;
           import net.minecraft.util.ActionResult;
           import net.minecraft.util.Formatting;
@@ -283,6 +284,7 @@ jobs:
                           inventory.setSelectedSlot(pearlSlot);
                       }
 
+                      // interactItem internally syncs the newly selected pearlSlot and sends PlayerInteractItemC2SPacket
                       ActionResult result = interactionManager.interactItem(player, Hand.MAIN_HAND);
                       if (result instanceof ActionResult.Success success && success.swingSource() == ActionResult.SwingSource.CLIENT) {
                           player.swingHand(Hand.MAIN_HAND);
@@ -290,7 +292,9 @@ jobs:
                   } finally {
                       if (switchedSlot && PlayerInventory.isValidHotbarIndex(originalSlot)) {
                           inventory.setSelectedSlot(originalSlot);
-                          interactionManager.syncSelectedSlot();
+                          if (player.networkHandler != null) {
+                              player.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(originalSlot));
+                          }
                       }
                   }
               }
@@ -543,29 +547,6 @@ jobs:
           done
 
           zip -r mid-click-to-pearl-src.zip settings.gradle gradle.properties build.gradle src/
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-
-      - name: Setup Gradle 9.2.1
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.2.1'
-
-      - name: Build Mod with Gradle
-        run: gradle build
-
-      - name: Upload Compiled Mod JAR and Source ZIP
-        uses: actions/upload-artifact@v4
-        with:
-          name: mid-click-to-pearl-1.21.11-release
-          path: |
-            build/libs/*.jar
-            !build/libs/*-sources.jar
-            mid-click-to-pearl-src.zipsrc.zip settings.gradle gradle.properties build.gradle src/
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
