@@ -121,13 +121,13 @@ jobs:
           {
             "key.category.mid_click_to_pearl.general": "Mid Click to Pal",
             "key.mid_click_to_pearl.throw_pearl": "Mid Click to Pal: Throw Ender Pearl",
-            "text.mid_click_to_pearl.no_pearl": "No Ender Pearl in Hotbar",
-            "text.mid_click_to_pearl.cooldown": "Ender Pearl is on Cooldown",
+            "text.mid_click_to_pearl.no_pearl": "No Ender Pearl!",
+            "text.mid_click_to_pearl.cooldown": "Pearl is on cooldown!",
             "screen.mid_click_to_pearl.config.title": "Mid Click to Pal Settings",
             "screen.mid_click_to_pearl.config.enabled": "Mid Click to Pal: ON",
             "screen.mid_click_to_pearl.config.disabled": "Mid Click to Pal: OFF",
-            "screen.mid_click_to_pearl.config.messages_on": "Status Messages: ON",
-            "screen.mid_click_to_pearl.config.messages_off": "Status Messages: OFF",
+            "screen.mid_click_to_pearl.config.messages_on": "Show Action Bar Messages: ON",
+            "screen.mid_click_to_pearl.config.messages_off": "Show Action Bar Messages: OFF",
             "screen.mid_click_to_pearl.config.keybind_info": "Current Keybind: %s",
             "screen.mid_click_to_pearl.config.keybind_hint": "Change keybind in Options -> Controls -> Key Binds",
             "screen.mid_click_to_pearl.config.conflict_hint": "Tip: If Pick Block is also on Middle Click, rebind Pick Block in Controls if needed.",
@@ -173,7 +173,9 @@ jobs:
                           KEY_CATEGORY
                   ));
 
-                  ClientTickEvents.END_CLIENT_TICK.register(client -> {
+                  ClientTickEvents.START_CLIENT_TICK.register(client -> {
+                      PearlThrowHandler.tick(client);
+
                       if (throwPearlKeyBinding == null) {
                           return;
                       }
@@ -232,11 +234,43 @@ jobs:
               private static final Text MSG_COOLDOWN = Text.translatable("text.mid_click_to_pearl.cooldown")
                       .formatted(Formatting.YELLOW);
 
+              private static boolean pendingSlotRestore = false;
+              private static int savedOriginalSlot = -1;
+              private static int activePearlSlot = -1;
+
               private PearlThrowHandler() {
               }
 
+              public static void tick(MinecraftClient client) {
+                  if (!pendingSlotRestore) {
+                      return;
+                  }
+
+                  pendingSlotRestore = false;
+                  int slotToRestore = savedOriginalSlot;
+                  int pearlSlotUsed = activePearlSlot;
+                  savedOriginalSlot = -1;
+                  activePearlSlot = -1;
+
+                  if (client == null || client.player == null || client.world == null || client.interactionManager == null) {
+                      return;
+                  }
+
+                  PlayerInventory inventory = client.player.getInventory();
+                  if (!PlayerInventory.isValidHotbarIndex(slotToRestore)) {
+                      return;
+                  }
+
+                  if (inventory.getSelectedSlot() == pearlSlotUsed && inventory.getSelectedSlot() != slotToRestore) {
+                      inventory.setSelectedSlot(slotToRestore);
+                      if (client.player.networkHandler != null) {
+                          client.player.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(slotToRestore));
+                      }
+                  }
+              }
+
               public static void tryThrowPearl(MinecraftClient client) {
-                  if (client == null || client.currentScreen != null) {
+                  if (client == null || client.currentScreen != null || pendingSlotRestore) {
                       return;
                   }
 
@@ -259,7 +293,7 @@ jobs:
                   int pearlSlot = findHotbarPearlSlot(inventory, originalSlot);
 
                   if (pearlSlot == -1) {
-                      if (MidClickPearlConfig.isShowStatusMessages()) {
+                      if (MidClickPearlConfig.isShowActionBarMessages()) {
                           player.sendMessage(MSG_NO_PEARL, true);
                       }
                       return;
@@ -271,7 +305,7 @@ jobs:
                   }
 
                   if (player.getItemCooldownManager().isCoolingDown(pearlStack)) {
-                      if (MidClickPearlConfig.isShowStatusMessages()) {
+                      if (MidClickPearlConfig.isShowActionBarMessages()) {
                           player.sendMessage(MSG_COOLDOWN, true);
                       }
                       return;
@@ -279,23 +313,20 @@ jobs:
 
                   boolean switchedSlot = (pearlSlot != originalSlot);
 
-                  try {
-                      if (switchedSlot) {
-                          inventory.setSelectedSlot(pearlSlot);
-                      }
+                  if (switchedSlot) {
+                      inventory.setSelectedSlot(pearlSlot);
+                  }
 
-                      // interactItem internally syncs the newly selected pearlSlot and sends PlayerInteractItemC2SPacket
-                      ActionResult result = interactionManager.interactItem(player, Hand.MAIN_HAND);
-                      if (result instanceof ActionResult.Success success && success.swingSource() == ActionResult.SwingSource.CLIENT) {
-                          player.swingHand(Hand.MAIN_HAND);
-                      }
-                  } finally {
-                      if (switchedSlot && PlayerInventory.isValidHotbarIndex(originalSlot)) {
-                          inventory.setSelectedSlot(originalSlot);
-                          if (player.networkHandler != null) {
-                              player.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(originalSlot));
-                          }
-                      }
+                  ActionResult result = interactionManager.interactItem(player, Hand.MAIN_HAND);
+                  if (result instanceof ActionResult.Success success
+                          && success.swingSource() == ActionResult.SwingSource.CLIENT) {
+                      player.swingHand(Hand.MAIN_HAND);
+                  }
+
+                  if (switchedSlot) {
+                      savedOriginalSlot = originalSlot;
+                      activePearlSlot = pearlSlot;
+                      pendingSlotRestore = true;
                   }
               }
 
@@ -336,10 +367,11 @@ jobs:
           public final class MidClickPearlConfig {
               private static final String CONFIG_FILE_NAME = "mid_click_to_pearl.properties";
               private static final String KEY_ENABLED = "enabled";
-              private static final String KEY_SHOW_MESSAGES = "show_status_messages";
+              private static final String KEY_SHOW_ACTION_BAR_MESSAGES = "show_action_bar_messages";
+              private static final String KEY_LEGACY_SHOW_MESSAGES = "show_status_messages";
 
               private static boolean enabled = true;
-              private static boolean showStatusMessages = true;
+              private static boolean showActionBarMessages = true;
 
               private MidClickPearlConfig() {
               }
@@ -357,13 +389,17 @@ jobs:
                   setEnabled(!enabled);
               }
 
-              public static boolean isShowStatusMessages() {
-                  return showStatusMessages;
+              public static boolean isShowActionBarMessages() {
+                  return showActionBarMessages;
               }
 
-              public static void toggleShowStatusMessages() {
-                  showStatusMessages = !showStatusMessages;
+              public static void setShowActionBarMessages(boolean value) {
+                  showActionBarMessages = value;
                   save();
+              }
+
+              public static void toggleShowActionBarMessages() {
+                  setShowActionBarMessages(!showActionBarMessages);
               }
 
               private static Path getConfigPath() {
@@ -374,7 +410,7 @@ jobs:
                   Path path = getConfigPath();
                   if (!Files.exists(path)) {
                       enabled = true;
-                      showStatusMessages = true;
+                      showActionBarMessages = true;
                       save();
                       return;
                   }
@@ -383,11 +419,12 @@ jobs:
                   try (InputStream in = Files.newInputStream(path)) {
                       props.load(in);
                       enabled = parseBooleanOrDefault(props.getProperty(KEY_ENABLED), true);
-                      showStatusMessages = parseBooleanOrDefault(props.getProperty(KEY_SHOW_MESSAGES), true);
+                      String rawMsg = props.getProperty(KEY_SHOW_ACTION_BAR_MESSAGES, props.getProperty(KEY_LEGACY_SHOW_MESSAGES));
+                      showActionBarMessages = parseBooleanOrDefault(rawMsg, true);
                   } catch (IOException | IllegalArgumentException e) {
                       MidClickToPearlClient.LOGGER.warn("Failed to read {}; using default settings.", CONFIG_FILE_NAME, e);
                       enabled = true;
-                      showStatusMessages = true;
+                      showActionBarMessages = true;
                   }
               }
 
@@ -409,7 +446,7 @@ jobs:
                   Path path = getConfigPath();
                   Properties props = new Properties();
                   props.setProperty(KEY_ENABLED, Boolean.toString(enabled));
-                  props.setProperty(KEY_SHOW_MESSAGES, Boolean.toString(showStatusMessages));
+                  props.setProperty(KEY_SHOW_ACTION_BAR_MESSAGES, Boolean.toString(showActionBarMessages));
 
                   try {
                       Files.createDirectories(path.getParent());
@@ -457,7 +494,7 @@ jobs:
                   }).dimensions(centerX, startY, buttonWidth, buttonHeight).build());
 
                   this.addDrawableChild(ButtonWidget.builder(getMessagesToggleText(), button -> {
-                      MidClickPearlConfig.toggleShowStatusMessages();
+                      MidClickPearlConfig.toggleShowActionBarMessages();
                       button.setMessage(getMessagesToggleText());
                   }).dimensions(centerX, startY + 24, buttonWidth, buttonHeight).build());
 
@@ -483,10 +520,10 @@ jobs:
               }
 
               private static Text getMessagesToggleText() {
-                  if (MidClickPearlConfig.isShowStatusMessages()) {
+                  if (MidClickPearlConfig.isShowActionBarMessages()) {
                       return Text.translatable("screen.mid_click_to_pearl.config.messages_on").formatted(Formatting.GREEN);
                   }
-                  return Text.translatable("screen.mid_click_to_pearl.config.messages_off").formatted(Formatting.GRAY);
+                  return Text.translatable("screen.mid_click_to_pearl.config.messages_off").formatted(Formatting.RED);
               }
 
               @Override
